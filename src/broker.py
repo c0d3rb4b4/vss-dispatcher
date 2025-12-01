@@ -1,0 +1,218 @@
+"""RabbitMQ broker for consuming messages from vss.normal and vss.priority queues."""
+
+import json
+import logging
+import threading
+import time
+from collections import deque
+from typing import Callable, Optional
+
+import pika
+from pika.adapters.blocking_connection import BlockingChannel
+from pika.exceptions import AMQPConnectionError, AMQPChannelError
+
+from .config import RabbitMQConfig
+from .models import MessagePriority, VssMessage
+
+logger = logging.getLogger(__name__)
+
+
+class MessageBroker:
+    """RabbitMQ message broker with priority interrupt support."""
+
+    def __init__(
+        self,
+        config: RabbitMQConfig,
+        message_handler: Callable[[VssMessage], None],
+    ):
+        """Initialize the message broker.
+
+        Args:
+            config: RabbitMQ configuration
+            message_handler: Callback function to handle messages
+        """
+        self.config = config
+        self.message_handler = message_handler
+        self.connection: Optional[pika.BlockingConnection] = None
+        self.channel: Optional[BlockingChannel] = None
+        self.priority_queue: deque = deque()
+        self.normal_queue: deque = deque()
+        self._running = False
+        self._lock = threading.Lock()
+        self._priority_event = threading.Event()
+        self._current_message: Optional[VssMessage] = None
+
+    def connect(self) -> None:
+        """Establish connection to RabbitMQ."""
+        credentials = pika.PlainCredentials(
+            self.config.username,
+            self.config.password,
+        )
+        parameters = pika.ConnectionParameters(
+            host=self.config.host,
+            port=self.config.port,
+            virtual_host=self.config.virtual_host,
+            credentials=credentials,
+            heartbeat=600,
+            blocked_connection_timeout=300,
+        )
+
+        logger.info("Connecting to RabbitMQ at %s:%d", self.config.host, self.config.port)
+        self.connection = pika.BlockingConnection(parameters)
+        self.channel = self.connection.channel()
+
+        # Declare queues
+        self.channel.queue_declare(queue=self.config.priority_queue, durable=True)
+        self.channel.queue_declare(queue=self.config.normal_queue, durable=True)
+
+        # Set prefetch count
+        self.channel.basic_qos(prefetch_count=self.config.prefetch_count)
+
+        logger.info("Connected to RabbitMQ successfully")
+
+    def _on_priority_message(
+        self,
+        channel: BlockingChannel,
+        method: pika.spec.Basic.Deliver,
+        properties: pika.BasicProperties,
+        body: bytes,
+    ) -> None:
+        """Handle incoming priority messages."""
+        try:
+            data = json.loads(body.decode("utf-8"))
+            message = VssMessage.from_dict(data, MessagePriority.PRIORITY)
+            logger.info("Received priority message: %s", message.image_path)
+
+            with self._lock:
+                self.priority_queue.append((message, method.delivery_tag))
+                self._priority_event.set()
+
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error("Failed to parse priority message: %s", str(e))
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    def _on_normal_message(
+        self,
+        channel: BlockingChannel,
+        method: pika.spec.Basic.Deliver,
+        properties: pika.BasicProperties,
+        body: bytes,
+    ) -> None:
+        """Handle incoming normal messages."""
+        try:
+            data = json.loads(body.decode("utf-8"))
+            message = VssMessage.from_dict(data, MessagePriority.NORMAL)
+            logger.info("Received normal message: %s", message.image_path)
+
+            with self._lock:
+                self.normal_queue.append((message, method.delivery_tag))
+
+        except (json.JSONDecodeError, KeyError) as e:
+            logger.error("Failed to parse normal message: %s", str(e))
+            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+
+    def has_priority_interrupt(self) -> bool:
+        """Check if there's a priority message waiting to interrupt."""
+        with self._lock:
+            return len(self.priority_queue) > 0
+
+    def _get_next_message(self) -> Optional[tuple[VssMessage, int]]:
+        """Get the next message to process, prioritizing priority queue."""
+        with self._lock:
+            if self.priority_queue:
+                return self.priority_queue.popleft()
+            if self.normal_queue:
+                return self.normal_queue.popleft()
+        return None
+
+    def _process_messages(self) -> None:
+        """Process messages from both queues with priority interrupt support."""
+        while self._running:
+            # Check for new messages
+            if self.connection and self.connection.is_open:
+                try:
+                    self.connection.process_data_events(time_limit=0.1)
+                except (AMQPConnectionError, AMQPChannelError) as e:
+                    logger.error("Connection error: %s", str(e))
+                    self._reconnect()
+                    continue
+
+            # Get next message to process
+            message_data = self._get_next_message()
+            if message_data:
+                message, delivery_tag = message_data
+                self._current_message = message
+
+                try:
+                    self.message_handler(message)
+                    if self.channel and self.channel.is_open:
+                        self.channel.basic_ack(delivery_tag=delivery_tag)
+                except Exception as e:
+                    logger.error("Error processing message: %s", str(e))
+                    if self.channel and self.channel.is_open:
+                        self.channel.basic_nack(
+                            delivery_tag=delivery_tag, requeue=True
+                        )
+                finally:
+                    self._current_message = None
+                    self._priority_event.clear()
+            else:
+                time.sleep(0.1)
+
+    def _reconnect(self) -> None:
+        """Attempt to reconnect to RabbitMQ."""
+        max_retries = 5
+        retry_delay = 5
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(
+                    "Attempting to reconnect (attempt %d/%d)",
+                    attempt + 1,
+                    max_retries,
+                )
+                self.connect()
+                self._setup_consumers()
+                logger.info("Reconnected successfully")
+                return
+            except AMQPConnectionError as e:
+                logger.warning("Reconnection failed: %s", str(e))
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+
+        logger.error("Failed to reconnect after %d attempts", max_retries)
+        self._running = False
+
+    def _setup_consumers(self) -> None:
+        """Set up message consumers for both queues."""
+        if self.channel:
+            self.channel.basic_consume(
+                queue=self.config.priority_queue,
+                on_message_callback=self._on_priority_message,
+                auto_ack=False,
+            )
+            self.channel.basic_consume(
+                queue=self.config.normal_queue,
+                on_message_callback=self._on_normal_message,
+                auto_ack=False,
+            )
+
+    def start(self) -> None:
+        """Start consuming messages."""
+        self._running = True
+        self._setup_consumers()
+
+        logger.info("Starting message consumption")
+        self._process_messages()
+
+    def stop(self) -> None:
+        """Stop consuming messages and close connection."""
+        logger.info("Stopping message broker")
+        self._running = False
+
+        if self.channel and self.channel.is_open:
+            self.channel.close()
+        if self.connection and self.connection.is_open:
+            self.connection.close()
+
+        logger.info("Message broker stopped")
