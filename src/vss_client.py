@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import requests
 from requests.exceptions import RequestException
@@ -76,7 +76,7 @@ class VssClient:
     def wait_duration(
         self,
         duration: float,
-        check_interrupt: Optional[callable] = None,
+        check_interrupt: Optional[Callable[[], bool]] = None,
         check_interval: float = 0.1,
     ) -> bool:
         """Wait for the specified duration, checking for interrupts.
