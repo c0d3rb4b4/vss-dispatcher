@@ -18,16 +18,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-    volumes:
-      - samba-data:/mount
-    command: '-s "share;/mount;yes;no;yes;all"'
-    networks:
-      - vss-network
-
-volumes:
-  rabbitmq-data:
-  samba-data:
-
-networks:
-  vss-network:
-    driver: bridge
