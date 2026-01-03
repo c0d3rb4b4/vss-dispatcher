@@ -2,16 +2,28 @@
 
 import os
 from dataclasses import dataclass, field
-from typing import Optional
+
+from .constants import (
+    DEFAULT_CHECK_INTERVAL,
+    DEFAULT_NORMAL_QUEUE,
+    DEFAULT_PREFETCH_COUNT,
+    DEFAULT_PRIORITY_QUEUE,
+    DEFAULT_RABBITMQ_PORT,
+    DEFAULT_SAMBA_MOUNT,
+    DEFAULT_VHOST,
+    DEFAULT_VSS_RETRY_COUNT,
+    DEFAULT_VSS_RETRY_DELAY,
+    DEFAULT_VSS_TIMEOUT,
+)
 
 
 @dataclass
 class RabbitMQConfig:
     """RabbitMQ connection configuration."""
 
-    host: str = field(default_factory=lambda: os.getenv("RABBITMQ_HOST", "rabbitmq"))
+    host: str = field(default_factory=lambda: os.getenv("RABBITMQ_HOST", "localhost"))
     port: int = field(
-        default_factory=lambda: int(os.getenv("RABBITMQ_PORT", "5672"))
+        default_factory=lambda: int(os.getenv("RABBITMQ_PORT", str(DEFAULT_RABBITMQ_PORT)))
     )
     username: str = field(
         default_factory=lambda: os.getenv("RABBITMQ_USERNAME", "guest")
@@ -20,16 +32,16 @@ class RabbitMQConfig:
         default_factory=lambda: os.getenv("RABBITMQ_PASSWORD", "guest")
     )
     virtual_host: str = field(
-        default_factory=lambda: os.getenv("RABBITMQ_VHOST", "/")
+        default_factory=lambda: os.getenv("RABBITMQ_VHOST", DEFAULT_VHOST)
     )
     normal_queue: str = field(
-        default_factory=lambda: os.getenv("RABBITMQ_NORMAL_QUEUE", "vss.normal")
+        default_factory=lambda: os.getenv("RABBITMQ_NORMAL_QUEUE", DEFAULT_NORMAL_QUEUE)
     )
     priority_queue: str = field(
-        default_factory=lambda: os.getenv("RABBITMQ_PRIORITY_QUEUE", "vss.priority")
+        default_factory=lambda: os.getenv("RABBITMQ_PRIORITY_QUEUE", DEFAULT_PRIORITY_QUEUE)
     )
     prefetch_count: int = field(
-        default_factory=lambda: int(os.getenv("RABBITMQ_PREFETCH_COUNT", "1"))
+        default_factory=lambda: int(os.getenv("RABBITMQ_PREFETCH_COUNT", str(DEFAULT_PREFETCH_COUNT)))
     )
 
 
@@ -41,13 +53,13 @@ class VSSConfig:
         default_factory=lambda: os.getenv("VSS_BASE_URL", "http://localhost:8080")
     )
     timeout: int = field(
-        default_factory=lambda: int(os.getenv("VSS_TIMEOUT", "30"))
+        default_factory=lambda: int(os.getenv("VSS_TIMEOUT", str(DEFAULT_VSS_TIMEOUT)))
     )
     retry_count: int = field(
-        default_factory=lambda: int(os.getenv("VSS_RETRY_COUNT", "3"))
+        default_factory=lambda: int(os.getenv("VSS_RETRY_COUNT", str(DEFAULT_VSS_RETRY_COUNT)))
     )
     retry_delay: float = field(
-        default_factory=lambda: float(os.getenv("VSS_RETRY_DELAY", "1.0"))
+        default_factory=lambda: float(os.getenv("VSS_RETRY_DELAY", str(DEFAULT_VSS_RETRY_DELAY)))
     )
 
 
@@ -56,10 +68,7 @@ class MountConfig:
     """Mount paths configuration."""
 
     samba_mount: str = field(
-        default_factory=lambda: os.getenv("SAMBA_MOUNT_PATH", "/mnt/samba")
-    )
-    config_mount: str = field(
-        default_factory=lambda: os.getenv("CONFIG_MOUNT_PATH", "/mnt/config")
+        default_factory=lambda: os.getenv("SAMBA_MOUNT_PATH", DEFAULT_SAMBA_MOUNT)
     )
 
 
@@ -74,7 +83,7 @@ class AppConfig:
         default_factory=lambda: os.getenv("LOG_LEVEL", "INFO")
     )
     check_interval: float = field(
-        default_factory=lambda: float(os.getenv("CHECK_INTERVAL", "0.1"))
+        default_factory=lambda: float(os.getenv("CHECK_INTERVAL", str(DEFAULT_CHECK_INTERVAL)))
     )
 
 

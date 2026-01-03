@@ -1,34 +1,96 @@
-name: Build and Deploy
+name: Deploy
 
 on:
   push:
     branches:
       - main
-  pull_request:
-    branches:
-      - main
-  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  build:
+  deploy:
     runs-on: self-hosted
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build and start services
+      - name: Sync files to service server
         run: |
+          rsync -avz --delete \
+            --exclude '.git' \
+            --exclude '__pycache__' \
+            --exclude '*.pyc' \
+            --exclude '.pytest_cache' \
+            --exclude 'config/app.env' \
+            ./ ${{ secrets.DEPLOY_USER }}@192.168.68.84:~/vss-dispatcher/
+
+      - name: Ensure config file exists
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@192.168.68.84 << 'EOF'
+          cd ~/vss-dispatcher
+          mkdir -p config
+          
+          # Create app.env from example if it doesn't exist
+          if [ ! -f config/app.env ]; then
+            echo "Creating config/app.env from example..."
+            if [ -f config/app.env.example ]; then
+              cp config/app.env.example config/app.env
+              echo "WARNING: Using default config - please update config/app.env with real values"
+            else
+              echo "Creating minimal config/app.env..."
+              cat > config/dispatcher.env << 'ENVEOF'
+          # RabbitMQ Settings
+          RABBITMQ_HOST=192.168.68.83
+          RABBITMQ_PORT=5672
+          RABBITMQ_USERNAME=mediawall
+          RABBITMQ_PASSWORD=mediawall
+          RABBITMQ_VHOST=/mediawall
+          
+          # VSS Service Settings
+          VSS_BASE_URL=http://192.168.68.79:8080
+          
+          # Application Settings
+          LOG_LEVEL=INFO
+          ENVEOF
+            fi
+          else
+            echo "config/app.env already exists"
+          fi
+          
+          echo "Config file contents (secrets redacted):"
+          cat config/app.env | grep -v PASSWORD || true
+          EOF
+
+      - name: Deploy via SSH
+        run: |
+          ssh ${{ secrets.DEPLOY_USER }}@192.168.68.84 << 'EOF'
+          cd ~/vss-dispatcher
+          
+          echo "=== Docker Compose Config ==="
+          docker compose config --quiet && echo "Config valid" || echo "Config invalid"
+          
+          echo "=== Stopping existing container ==="
+          docker compose down || true
+          
+          echo "=== Building image ==="
           docker compose build
+          
+          echo "=== Starting container ==="
           docker compose up -d
+          
+          echo "=== Container status ==="
+          docker compose ps -a
+          EOF
 
-      - name: Verify services are running
+      - name: Verify deployment
         run: |
-          sleep 10
-          docker compose ps
-
-      - name: Show logs
-        if: always()
-        run: docker compose logs --tail=50
+          ssh ${{ secrets.DEPLOY_USER }}@192.168.68.84 << 'EOF'
+          cd ~/vss-dispatcher
+          
+          echo "=== Waiting for container to start ==="
+          sleep 5
+          
+          echo "=== Container logs ==="
+          docker compose logs --tail=30
+          EOF

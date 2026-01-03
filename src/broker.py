@@ -12,6 +12,12 @@ from pika.adapters.blocking_connection import BlockingChannel
 from pika.exceptions import AMQPConnectionError, AMQPChannelError
 
 from .config import RabbitMQConfig
+from .constants import (
+    DEFAULT_BLOCKED_CONNECTION_TIMEOUT,
+    DEFAULT_HEARTBEAT,
+    MAX_RECONNECT_RETRIES,
+    RECONNECT_DELAY_SECONDS,
+)
 from .models import MessagePriority, VssMessage
 
 logger = logging.getLogger(__name__)
@@ -53,8 +59,8 @@ class MessageBroker:
             port=self.config.port,
             virtual_host=self.config.virtual_host,
             credentials=credentials,
-            heartbeat=600,
-            blocked_connection_timeout=300,
+            heartbeat=DEFAULT_HEARTBEAT,
+            blocked_connection_timeout=DEFAULT_BLOCKED_CONNECTION_TIMEOUT,
         )
 
         logger.info("Connecting to RabbitMQ at %s:%d", self.config.host, self.config.port)
@@ -161,15 +167,12 @@ class MessageBroker:
 
     def _reconnect(self) -> None:
         """Attempt to reconnect to RabbitMQ."""
-        max_retries = 5
-        retry_delay = 5
-
-        for attempt in range(max_retries):
+        for attempt in range(MAX_RECONNECT_RETRIES):
             try:
                 logger.info(
                     "Attempting to reconnect (attempt %d/%d)",
                     attempt + 1,
-                    max_retries,
+                    MAX_RECONNECT_RETRIES,
                 )
                 self.connect()
                 self._setup_consumers()
@@ -177,10 +180,10 @@ class MessageBroker:
                 return
             except AMQPConnectionError as e:
                 logger.warning("Reconnection failed: %s", str(e))
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
+                if attempt < MAX_RECONNECT_RETRIES - 1:
+                    time.sleep(RECONNECT_DELAY_SECONDS)
 
-        logger.error("Failed to reconnect after %d attempts", max_retries)
+        logger.error("Failed to reconnect after %d attempts", MAX_RECONNECT_RETRIES)
         self._running = False
 
     def _setup_consumers(self) -> None:

@@ -9,8 +9,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY src/ ./src/
 
-# Create mount directories
-RUN mkdir -p /mnt/config /mnt/samba
+# Create config directory
+RUN mkdir -p /app/config
+
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash appuser
+USER appuser
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

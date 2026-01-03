@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from .constants import DEFAULT_MESSAGE_DURATION
+
 
 class MessagePriority(Enum):
     """Message priority levels."""
@@ -26,7 +28,7 @@ class VssMessage:
         """Create a VssMessage from a dictionary."""
         return cls(
             image_path=data.get("image_path", ""),
-            duration=float(data.get("duration", 5.0)),
+            duration=float(data.get("duration", DEFAULT_MESSAGE_DURATION)),
             priority=priority,
             message_id=data.get("message_id"),
         )

@@ -71,6 +71,12 @@ The application can be configured via environment variables:
 | `VSS_RETRY_COUNT` | `3` | Number of retry attempts |
 | `VSS_RETRY_DELAY` | `1.0` | Delay between retries in seconds |
 
+### Mount Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAMBA_MOUNT_PATH` | `/mnt/mediawall` | Path to mounted samba share |
+
 ### Application Settings
 
 | Variable | Default | Description |
@@ -80,15 +86,15 @@ The application can be configured via environment variables:
 
 ## Quick Start
 
-### Using Docker Compose
+### Using Docker Compose (Production)
 
-1. Clone the repository:
+1. Copy and configure environment:
    ```bash
-   git clone https://github.com/c0d3rb4b4/vss-dispatcher.git
-   cd vss-dispatcher
+   cp config/app.env.example config/app.env
+   # Edit config/app.env with your settings
    ```
 
-2. Build and start services:
+2. Build and start:
    ```bash
    docker compose build
    docker compose up -d
@@ -104,13 +110,12 @@ The application can be configured via environment variables:
    docker compose logs -f vss-dispatcher
    ```
 
-### Services
+## Architecture
 
-The Docker Compose setup includes:
-
-- **vss-dispatcher**: The main dispatcher service
-- **rabbitmq**: RabbitMQ with management UI (accessible at http://localhost:15672)
-- **samba**: Samba file server for shared image storage
+The dispatcher connects to:
+- **RabbitMQ** (external): Message broker at 192.168.68.83
+- **VSS Service** (external): Display service at 192.168.68.79
+- **Samba Mount**: Shared storage at /mnt/mediawall
 
 ## Development
 
@@ -136,9 +141,10 @@ The Docker Compose setup includes:
 
 The project includes a GitHub Actions workflow for self-hosted deployment:
 
+- **Runner**: 192.168.68.88 (self-hosted)
+- **Deploy target**: 192.168.68.84 via SSH/rsync
 - Builds Docker images on push to main branch
-- Deploys using Docker Compose
-- Runs on self-hosted runners
+- Preserves config/app.env between deployments
 
 ## License
 

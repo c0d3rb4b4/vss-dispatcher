@@ -1,22 +1,86 @@
 """Main entry point for vss-dispatcher."""
 
+import json
 import logging
 import signal
 import sys
+from pathlib import Path
 
 from .broker import MessageBroker
 from .config import load_config
+from .constants import ALLOWED_IMAGE_EXTENSIONS, APP_NAME, APP_VERSION
 from .models import VssMessage
 from .vss_client import VssClient
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+
+class JsonFormatter(logging.Formatter):
+    """JSON formatter for structured logging."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        log_data = {
+            "timestamp": self.formatTime(record),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+            "service": APP_NAME,
+            "version": APP_VERSION,
+        }
+        if record.exc_info:
+            log_data["exception"] = self.formatException(record.exc_info)
+        return json.dumps(log_data)
+
+
+def setup_logging(level: str) -> None:
+    """Configure JSON structured logging."""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(JsonFormatter())
+    logging.root.handlers = [handler]
+    logging.root.setLevel(level)
+
 
 logger = logging.getLogger(__name__)
+
+
+def validate_image_path(image_path: str, mount_path: str) -> bool:
+    """Validate that the image path is valid and accessible.
+
+    Args:
+        image_path: Path to the image file
+        mount_path: Base mount path for validation
+
+    Returns:
+        True if valid, False otherwise
+    """
+    if not image_path:
+        logger.warning("Empty image path received")
+        return False
+
+    # Check extension
+    path = Path(image_path)
+    if path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+        logger.warning(
+            "Invalid image extension: %s (allowed: %s)",
+            path.suffix,
+            ALLOWED_IMAGE_EXTENSIONS,
+        )
+        return False
+
+    # Check if path is under mount path (security)
+    try:
+        full_path = Path(image_path).resolve()
+        mount_resolved = Path(mount_path).resolve()
+        if not str(full_path).startswith(str(mount_resolved)):
+            logger.warning(
+                "Image path %s is outside mount path %s",
+                image_path,
+                mount_path,
+            )
+            return False
+    except (OSError, ValueError) as e:
+        logger.warning("Path validation error: %s", str(e))
+        return False
+
+    return True
 
 
 class VssDispatcher:
@@ -25,12 +89,13 @@ class VssDispatcher:
     def __init__(self):
         """Initialize the dispatcher."""
         self.config = load_config()
+
+        # Set up logging first
+        setup_logging(self.config.log_level)
+
         self.vss_client = VssClient(self.config.vss)
         self.broker: MessageBroker = None
         self._shutdown_requested = False
-
-        # Set log level from config
-        logging.getLogger().setLevel(self.config.log_level)
 
     def handle_message(self, message: VssMessage) -> None:
         """Handle a VSS message.
@@ -38,6 +103,11 @@ class VssDispatcher:
         Args:
             message: The message to process
         """
+        # Validate image path
+        if not validate_image_path(message.image_path, self.config.mount.samba_mount):
+            logger.error("Invalid image path, skipping message: %s", message.image_path)
+            return
+
         logger.info(
             "Processing %s message: %s (duration: %.2fs)",
             message.priority.value,
@@ -83,9 +153,14 @@ class VssDispatcher:
         signal.signal(signal.SIGTERM, self._signal_handler)
         signal.signal(signal.SIGINT, self._signal_handler)
 
-        logger.info("Starting VSS Dispatcher")
+        logger.info(
+            "Starting %s v%s",
+            APP_NAME,
+            APP_VERSION,
+        )
         logger.info("RabbitMQ: %s:%d", self.config.rabbitmq.host, self.config.rabbitmq.port)
         logger.info("VSS Service: %s", self.config.vss.base_url)
+        logger.info("Mount path: %s", self.config.mount.samba_mount)
 
         # Initialize broker
         self.broker = MessageBroker(

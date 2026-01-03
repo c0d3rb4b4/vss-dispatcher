@@ -3,51 +3,21 @@ services:
     build: .
     container_name: vss-dispatcher
     restart: unless-stopped
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    environment:
-      - RABBITMQ_HOST=rabbitmq
-      - RABBITMQ_PORT=5672
-      - RABBITMQ_USERNAME=guest
-      - RABBITMQ_PASSWORD=guest
-      - VSS_BASE_URL=http://host.docker.internal:8080
-      - LOG_LEVEL=INFO
+    env_file:
+      - ./config/app.env
     volumes:
-      - ./config:/mnt/config:ro
-      - samba-data:/mnt/samba:ro
-    networks:
-      - vss-network
-
-  rabbitmq:
-    image: rabbitmq:3-management
-    container_name: vss-rabbitmq
-    restart: unless-stopped
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    environment:
-      - RABBITMQ_DEFAULT_USER=guest
-      - RABBITMQ_DEFAULT_PASS=guest
-    volumes:
-      - rabbitmq-data:/var/lib/rabbitmq
-    networks:
-      - vss-network
+      - ./config:/app/config:ro
+      - /mnt/mediawall:/mnt/mediawall:ro
+    labels:
+      - "logging=promtail"
+      - "service=vss-dispatcher"
+      - "environment=production"
     healthcheck:
-      test: rabbitmq-diagnostics -q ping
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  samba:
-    image: dperson/samba
-    container_name: vss-samba
-    restart: unless-stopped
-    ports:
-      - "139:139"
-      - "445:445"
-    environment:
-      - TZ=UTC
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     volumes:
       - samba-data:/mount
     command: '-s "share;/mount;yes;no;yes;all"'
