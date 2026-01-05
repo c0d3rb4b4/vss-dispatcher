@@ -109,7 +109,7 @@ class ImageCompositor:
             return False
 
     def composite_overlay(self, overlay_path: str) -> Optional[str]:
-        """Composite an overlay on the current base image.
+        """Composite an overlay on the current base image at bottom-right corner.
 
         Args:
             overlay_path: Path to overlay image (should be transparent PNG)
@@ -129,24 +129,25 @@ class ImageCompositor:
                 logger.debug("Converting overlay to RGBA from mode: %s", overlay.mode)
                 overlay = overlay.convert("RGBA")
 
-            # Resize overlay if needed
-            if overlay.size != (self.display_width, self.display_height):
-                logger.debug(
-                    "Resizing overlay: %dx%d -> %dx%d",
-                    overlay.width, overlay.height,
-                    self.display_width, self.display_height
-                )
-                overlay = overlay.resize((self.display_width, self.display_height), Image.Resampling.LANCZOS)
+            # Keep overlay at its original size (don't resize to full display)
+            overlay_width, overlay_height = overlay.size
+            logger.debug("Overlay dimensions: %dx%d", overlay_width, overlay_height)
 
             # Convert base to RGBA for compositing
             if base.mode != "RGBA":
                 base = base.convert("RGBA")
 
-            # Composite
-            composited = Image.alpha_composite(base, overlay)
+            # Calculate bottom-right position
+            x_position = self.display_width - overlay_width
+            y_position = self.display_height - overlay_height
+            
+            logger.debug("Positioning overlay at bottom-right: x=%d, y=%d", x_position, y_position)
+
+            # Paste overlay at bottom-right corner using alpha channel as mask
+            base.paste(overlay, (x_position, y_position), overlay)
 
             # Convert back to RGB for saving
-            composited = composited.convert("RGB")
+            composited = base.convert("RGB")
 
             # Generate unique filename based on overlay path
             overlay_hash = hashlib.md5(overlay_path.encode()).hexdigest()[:8]
