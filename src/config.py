@@ -10,6 +10,10 @@ from .constants import (
     DEFAULT_PRIORITY_QUEUE,
     DEFAULT_RABBITMQ_PORT,
     DEFAULT_SAMBA_MOUNT,
+    DEFAULT_BASE_IMAGE_DIR,
+    DEFAULT_COMPOSITE_DIR,
+    DEFAULT_DISPLAY_WIDTH,
+    DEFAULT_DISPLAY_HEIGHT,
     DEFAULT_VHOST,
     DEFAULT_VSS_RETRY_COUNT,
     DEFAULT_VSS_RETRY_DELAY,
@@ -69,6 +73,18 @@ class MountConfig:
 
     samba_mount: str = field(
         default_factory=lambda: os.getenv("SAMBA_MOUNT_PATH", DEFAULT_SAMBA_MOUNT)
+    )
+    base_image_dir: str = field(
+        default_factory=lambda: os.getenv("BASE_IMAGE_DIR", DEFAULT_BASE_IMAGE_DIR)
+    )
+    composite_dir: str = field(
+        default_factory=lambda: os.getenv("COMPOSITE_DIR", DEFAULT_COMPOSITE_DIR)
+    )
+    display_width: int = field(
+        default_factory=lambda: int(os.getenv("DISPLAY_WIDTH", str(DEFAULT_DISPLAY_WIDTH)))
+    )
+    display_height: int = field(
+        default_factory=lambda: int(os.getenv("DISPLAY_HEIGHT", str(DEFAULT_DISPLAY_HEIGHT)))
     )
 
 

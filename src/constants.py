@@ -30,6 +30,12 @@ DEFAULT_MESSAGE_DURATION = 5.0
 
 # Mount paths
 DEFAULT_SAMBA_MOUNT = "/mnt/mediawall"
+DEFAULT_BASE_IMAGE_DIR = "/mnt/mediawall/mediawall/vss-dispatcher/base-image"
+DEFAULT_COMPOSITE_DIR = "/mnt/mediawall/mediawall/vss-dispatcher/composites"
+
+# Default display resolution
+DEFAULT_DISPLAY_WIDTH = 2560
+DEFAULT_DISPLAY_HEIGHT = 1440
 
 # Allowed image extensions
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"}

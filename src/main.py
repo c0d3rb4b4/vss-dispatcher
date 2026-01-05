@@ -7,9 +7,10 @@ import sys
 from pathlib import Path
 
 from .broker import MessageBroker
+from .compositor import ImageCompositor
 from .config import load_config
 from .constants import ALLOWED_IMAGE_EXTENSIONS, APP_NAME, APP_VERSION
-from .models import VssMessage
+from .models import MessageType, VssMessage
 from .vss_client import VssClient
 
 
@@ -103,6 +104,17 @@ class VssDispatcher:
         logger.debug("Initializing VSS client: base_url=%s, timeout=%d, retries=%d",
                     self.config.vss.base_url, self.config.vss.timeout, self.config.vss.retry_count)
         self.vss_client = VssClient(self.config.vss)
+        
+        logger.debug("Initializing image compositor: base_dir=%s, composite_dir=%s, resolution=%dx%d",
+                    self.config.mount.base_image_dir, self.config.mount.composite_dir,
+                    self.config.mount.display_width, self.config.mount.display_height)
+        self.compositor = ImageCompositor(
+            base_image_dir=self.config.mount.base_image_dir,
+            composite_dir=self.config.mount.composite_dir,
+            display_width=self.config.mount.display_width,
+            display_height=self.config.mount.display_height,
+        )
+        
         self.broker: MessageBroker = None
         self._shutdown_requested = False
         logger.debug("VssDispatcher initialized successfully")
@@ -113,26 +125,55 @@ class VssDispatcher:
         Args:
             message: The message to process
         """
-        logger.debug("Handling message: priority=%s, image=%s, duration=%.2fs",
-                    message.priority.value, message.image_path, message.duration)
+        logger.debug("Handling message: priority=%s, type=%s, image=%s, duration=%.2fs",
+                    message.priority.value, message.message_type.value, message.image_path, message.duration)
         
         # Validate image path
         if not validate_image_path(message.image_path, self.config.mount.samba_mount):
-            logger.error("Message rejected: invalid image path - priority=%s, image=%s",
-                        message.priority.value, message.image_path)
+            logger.error("Message rejected: invalid image path - priority=%s, type=%s, image=%s",
+                        message.priority.value, message.message_type.value, message.image_path)
             return
 
-        logger.info(
-            "Processing %s message: image=%s, duration=%.2fs",
-            message.priority.value,
-            message.image_path,
-            message.duration,
-        )
+        # Determine final image path based on message type
+        final_image_path = message.image_path
+        
+        if message.message_type == MessageType.IMAGE:
+            # Full image update - also update base image
+            logger.info("Processing IMAGE message: updating base and displaying - image=%s, duration=%.2fs",
+                       message.image_path, message.duration)
+            if not self.compositor.update_base_image(message.image_path):
+                logger.error("Failed to update base image: image=%s", message.image_path)
+                return
+            # Display the new base image
+            final_image_path = message.image_path
+            
+        elif message.message_type == MessageType.OVERLAY:
+            # Overlay message - composite on current base
+            logger.info("Processing OVERLAY message: compositing on base - overlay=%s, duration=%.2fs",
+                       message.image_path, message.duration)
+            composited_path = self.compositor.composite_overlay(message.image_path)
+            if not composited_path:
+                logger.error("Failed to composite overlay: overlay=%s", message.image_path)
+                return
+            # Display the composited image
+            final_image_path = composited_path
+            # Clean up old composites
+            self.compositor.clear_old_composites()
 
-        # Send image to VSS
+        # Send final image to VSS
         logger.debug("Sending image to VSS: image=%s, vss_url=%s",
-                    message.image_path, self.config.vss.base_url)
-        response = self.vss_client.send_image(message)
+                    final_image_path, self.config.vss.base_url)
+        
+        # Create a new message with the final image path
+        display_message = VssMessage(
+            image_path=final_image_path,
+            duration=message.duration,
+            priority=message.priority,
+            message_type=message.message_type,
+            message_id=message.message_id,
+        )
+        
+        response = self.vss_client.send_image(display_message)
 
         if response.success:
             logger.debug("Image sent successfully to VSS, starting display wait: duration=%.2fs", message.duration)
@@ -144,19 +185,19 @@ class VssDispatcher:
             )
 
             if completed:
-                logger.info("Display completed successfully: priority=%s, image=%s, duration=%.2fs",
-                           message.priority.value, message.image_path, message.duration)
+                logger.info("Display completed successfully: priority=%s, type=%s, image=%s, duration=%.2fs",
+                           message.priority.value, message.message_type.value, final_image_path, message.duration)
             else:
                 logger.info(
-                    "Display interrupted by priority message: image=%s, elapsed_time<%.2fs",
-                    message.image_path,
-                    message.duration,
+                    "Display interrupted by priority message: type=%s, image=%s, elapsed_time<%.2fs",
+                    message.message_type.value, final_image_path, message.duration,
                 )
         else:
             logger.error(
-                "Failed to send image to VSS: priority=%s, image=%s, vss_url=%s, error=%s",
+                "Failed to send image to VSS: priority=%s, type=%s, image=%s, vss_url=%s, error=%s",
                 message.priority.value,
-                message.image_path,
+                message.message_type.value,
+                final_image_path,
                 self.config.vss.base_url,
                 response.error,
             )

@@ -94,8 +94,8 @@ class MessageBroker:
                         method.delivery_tag, len(body))
             data = json.loads(body.decode("utf-8"))
             message = VssMessage.from_dict(data, MessagePriority.PRIORITY)
-            logger.info("Parsed priority message: image=%s, duration=%.2fs, delivery_tag=%d",
-                       message.image_path, message.duration, method.delivery_tag)
+            logger.info("Parsed priority message: type=%s, image=%s, duration=%.2fs, delivery_tag=%d",
+                       message.message_type.value, message.image_path, message.duration, method.delivery_tag)
 
             with self._lock:
                 queue_size = len(self.priority_queue)
@@ -121,8 +121,8 @@ class MessageBroker:
                         method.delivery_tag, len(body))
             data = json.loads(body.decode("utf-8"))
             message = VssMessage.from_dict(data, MessagePriority.NORMAL)
-            logger.info("Parsed normal message: image=%s, duration=%.2fs, delivery_tag=%d",
-                       message.image_path, message.duration, method.delivery_tag)
+            logger.info("Parsed normal message: type=%s, image=%s, duration=%.2fs, delivery_tag=%d",
+                       message.message_type.value, message.image_path, message.duration, method.delivery_tag)
 
             with self._lock:
                 queue_size = len(self.normal_queue)
