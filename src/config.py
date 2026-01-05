@@ -54,7 +54,16 @@ class VSSConfig:
     """VSS service configuration."""
 
     base_url: str = field(
-        default_factory=lambda: os.getenv("VSS_BASE_URL", "http://localhost:8080")
+        default_factory=lambda: os.getenv("VSS_BASE_URL", "http://localhost:8081")
+    )
+    api_key: str = field(
+        default_factory=lambda: os.getenv("VSS_API_KEY", "")
+    )
+    api_secret: str = field(
+        default_factory=lambda: os.getenv("VSS_API_SECRET", "")
+    )
+    device_uuids: list = field(
+        default_factory=lambda: os.getenv("VSS_DEVICE_UUIDS", "").split(",") if os.getenv("VSS_DEVICE_UUIDS") else []
     )
     timeout: int = field(
         default_factory=lambda: int(os.getenv("VSS_TIMEOUT", str(DEFAULT_VSS_TIMEOUT)))
