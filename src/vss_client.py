@@ -40,13 +40,17 @@ class VssClient:
             "duration": message.duration,
         }
 
+        logger.debug("Preparing to send image to VSS: url=%s, image=%s, duration=%.2fs, max_attempts=%d",
+                    url, message.image_path, message.duration, self.config.retry_count)
+        
         for attempt in range(self.config.retry_count):
             try:
                 logger.info(
-                    "Sending image to VSS: %s (attempt %d/%d)",
+                    "Sending image to VSS: image=%s, attempt=%d/%d, timeout=%ds",
                     message.image_path,
                     attempt + 1,
                     self.config.retry_count,
+                    self.config.timeout,
                 )
 
                 response = self.session.post(
@@ -56,21 +60,26 @@ class VssClient:
                 )
                 response.raise_for_status()
 
-                logger.info("Successfully sent image to VSS: %s", message.image_path)
+                logger.info("Successfully sent image to VSS: image=%s, status=%d, attempt=%d/%d",
+                           message.image_path, response.status_code, attempt + 1, self.config.retry_count)
                 return VssResponse(success=True, message="Image sent successfully")
 
             except RequestException as e:
                 logger.warning(
-                    "Failed to send image (attempt %d/%d): %s",
+                    "Failed to send image to VSS: image=%s, url=%s, attempt=%d/%d, error=%s",
+                    message.image_path,
+                    url,
                     attempt + 1,
                     self.config.retry_count,
                     str(e),
                 )
                 if attempt < self.config.retry_count - 1:
+                    logger.debug("Retrying in %.1fs...", self.config.retry_delay)
                     time.sleep(self.config.retry_delay)
 
         error_msg = f"Failed to send image after {self.config.retry_count} attempts"
-        logger.error(error_msg)
+        logger.error("All VSS send attempts failed: image=%s, url=%s, attempts=%d",
+                    message.image_path, url, self.config.retry_count)
         return VssResponse(success=False, error=error_msg)
 
     def wait_duration(
@@ -89,12 +98,15 @@ class VssClient:
         Returns:
             True if completed without interrupt, False if interrupted
         """
+        logger.debug("Starting wait duration: duration=%.2fs, check_interval=%.2fs, has_interrupt_check=%s",
+                    duration, check_interval, bool(check_interrupt))
         start_time = time.time()
         elapsed = 0.0
 
         while elapsed < duration:
             if check_interrupt and check_interrupt():
-                logger.info("Wait interrupted by priority message")
+                logger.info("Wait interrupted by priority message: elapsed=%.2fs, total_duration=%.2fs",
+                           elapsed, duration)
                 return False
 
             remaining = duration - elapsed
@@ -102,6 +114,7 @@ class VssClient:
             time.sleep(sleep_time)
             elapsed = time.time() - start_time
 
+        logger.debug("Wait duration completed: duration=%.2fs, actual_elapsed=%.2fs", duration, elapsed)
         return True
 
     def close(self) -> None:

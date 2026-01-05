@@ -52,14 +52,15 @@ def validate_image_path(image_path: str, mount_path: str) -> bool:
         True if valid, False otherwise
     """
     if not image_path:
-        logger.warning("Empty image path received")
+        logger.warning("Validation failed: empty image path")
         return False
 
     # Check extension
     path = Path(image_path)
     if path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
         logger.warning(
-            "Invalid image extension: %s (allowed: %s)",
+            "Validation failed: invalid image extension - path=%s, extension=%s, allowed=%s",
+            image_path,
             path.suffix,
             ALLOWED_IMAGE_EXTENSIONS,
         )
@@ -71,15 +72,17 @@ def validate_image_path(image_path: str, mount_path: str) -> bool:
         mount_resolved = Path(mount_path).resolve()
         if not str(full_path).startswith(str(mount_resolved)):
             logger.warning(
-                "Image path %s is outside mount path %s",
+                "Validation failed: image path outside mount - image=%s, mount=%s",
                 image_path,
                 mount_path,
             )
             return False
     except (OSError, ValueError) as e:
-        logger.warning("Path validation error: %s", str(e))
+        logger.warning("Validation failed: path resolution error - path=%s, mount=%s, error=%s", 
+                      image_path, mount_path, str(e))
         return False
 
+    logger.debug("Image path validated successfully: path=%s", image_path)
     return True
 
 
@@ -88,14 +91,19 @@ class VssDispatcher:
 
     def __init__(self):
         """Initialize the dispatcher."""
+        logger.debug("Initializing VssDispatcher")
         self.config = load_config()
 
         # Set up logging first
         setup_logging(self.config.log_level)
+        logger.info("Logging configured: level=%s", self.config.log_level)
 
+        logger.debug("Initializing VSS client: base_url=%s, timeout=%d, retries=%d",
+                    self.config.vss.base_url, self.config.vss.timeout, self.config.vss.retry_count)
         self.vss_client = VssClient(self.config.vss)
         self.broker: MessageBroker = None
         self._shutdown_requested = False
+        logger.debug("VssDispatcher initialized successfully")
 
     def handle_message(self, message: VssMessage) -> None:
         """Handle a VSS message.
@@ -103,22 +111,29 @@ class VssDispatcher:
         Args:
             message: The message to process
         """
+        logger.debug("Handling message: priority=%s, image=%s, duration=%.2fs",
+                    message.priority.value, message.image_path, message.duration)
+        
         # Validate image path
         if not validate_image_path(message.image_path, self.config.mount.samba_mount):
-            logger.error("Invalid image path, skipping message: %s", message.image_path)
+            logger.error("Message rejected: invalid image path - priority=%s, image=%s",
+                        message.priority.value, message.image_path)
             return
 
         logger.info(
-            "Processing %s message: %s (duration: %.2fs)",
+            "Processing %s message: image=%s, duration=%.2fs",
             message.priority.value,
             message.image_path,
             message.duration,
         )
 
         # Send image to VSS
+        logger.debug("Sending image to VSS: image=%s, vss_url=%s",
+                    message.image_path, self.config.vss.base_url)
         response = self.vss_client.send_image(message)
 
         if response.success:
+            logger.debug("Image sent successfully to VSS, starting display wait: duration=%.2fs", message.duration)
             # Wait for duration, checking for priority interrupts
             completed = self.vss_client.wait_duration(
                 message.duration,
@@ -127,16 +142,20 @@ class VssDispatcher:
             )
 
             if completed:
-                logger.info("Completed displaying: %s", message.image_path)
+                logger.info("Display completed successfully: priority=%s, image=%s, duration=%.2fs",
+                           message.priority.value, message.image_path, message.duration)
             else:
                 logger.info(
-                    "Display interrupted by priority message: %s",
+                    "Display interrupted by priority message: image=%s, elapsed_time<%.2fs",
                     message.image_path,
+                    message.duration,
                 )
         else:
             logger.error(
-                "Failed to send image to VSS: %s - %s",
+                "Failed to send image to VSS: priority=%s, image=%s, vss_url=%s, error=%s",
+                message.priority.value,
                 message.image_path,
+                self.config.vss.base_url,
                 response.error,
             )
 
@@ -158,11 +177,17 @@ class VssDispatcher:
             APP_NAME,
             APP_VERSION,
         )
-        logger.info("RabbitMQ: %s:%d", self.config.rabbitmq.host, self.config.rabbitmq.port)
-        logger.info("VSS Service: %s", self.config.vss.base_url)
+        logger.info("RabbitMQ: host=%s, port=%d, vhost=%s, priority_queue=%s, normal_queue=%s", 
+                   self.config.rabbitmq.host, self.config.rabbitmq.port, self.config.rabbitmq.virtual_host,
+                   self.config.rabbitmq.priority_queue, self.config.rabbitmq.normal_queue)
+        logger.info("VSS Service: base_url=%s, timeout=%ds, retries=%d", 
+                   self.config.vss.base_url, self.config.vss.timeout, self.config.vss.retry_count)
         logger.info("Mount path: %s", self.config.mount.samba_mount)
+        logger.info("Check interval: %.2fs, prefetch count: %d", 
+                   self.config.check_interval, self.config.rabbitmq.prefetch_count)
 
         # Initialize broker
+        logger.debug("Initializing message broker")
         self.broker = MessageBroker(
             self.config.rabbitmq,
             self.handle_message,
@@ -170,15 +195,17 @@ class VssDispatcher:
 
         try:
             # Connect to RabbitMQ
+            logger.debug("Connecting to RabbitMQ broker")
             self.broker.connect()
 
             # Start consuming messages
+            logger.info("Starting message consumption loop")
             self.broker.start()
 
         except KeyboardInterrupt:
-            logger.info("Keyboard interrupt received")
+            logger.info("Keyboard interrupt received, initiating shutdown")
         except Exception as e:
-            logger.error("Fatal error: %s", str(e))
+            logger.error("Fatal error in dispatcher: %s", str(e), exc_info=True)
             raise
         finally:
             self.cleanup()
