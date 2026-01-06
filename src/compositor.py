@@ -44,6 +44,14 @@ class ImageCompositor:
             self.base_image_dir, self.composite_dir, display_width, display_height
         )
 
+    def get_current_base_image_path(self) -> str:
+        """Get the path to the current base image.
+        
+        Returns:
+            String path to current base image
+        """
+        return str(self._current_base_path)
+
     def get_current_base_image(self) -> Image.Image:
         """Get the current base image.
 

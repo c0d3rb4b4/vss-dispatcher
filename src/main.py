@@ -117,6 +117,10 @@ class VssDispatcher:
         
         self.broker: MessageBroker = None
         self._shutdown_requested = False
+        
+        # Store last overlay for reapplication on base image changes
+        self._last_overlay_path: str | None = None
+        
         logger.debug("VssDispatcher initialized successfully")
 
     def handle_message(self, message: VssMessage) -> None:
@@ -144,21 +148,45 @@ class VssDispatcher:
             if not self.compositor.update_base_image(message.image_path):
                 logger.error("Failed to update base image: image=%s", message.image_path)
                 return
-            # Display the new base image
-            final_image_path = message.image_path
+            
+            # If we have a stored overlay, reapply it to the new base image
+            if self._last_overlay_path:
+                logger.info("Reapplying stored overlay to new base image: overlay=%s", self._last_overlay_path)
+                composited_path = self.compositor.composite_overlay(self._last_overlay_path)
+                if composited_path:
+                    final_image_path = composited_path
+                    logger.debug("Overlay reapplied successfully: %s", composited_path)
+                else:
+                    logger.warning("Failed to reapply overlay, using base image only: overlay=%s", self._last_overlay_path)
+                    final_image_path = message.image_path
+            else:
+                # No stored overlay, just display the new base image
+                final_image_path = message.image_path
             
         elif message.message_type == MessageType.OVERLAY:
             # Overlay message - composite on current base
             logger.info("Processing OVERLAY message: compositing on base - overlay=%s, duration=%.2fs",
                        message.image_path, message.duration)
-            composited_path = self.compositor.composite_overlay(message.image_path)
-            if not composited_path:
-                logger.error("Failed to composite overlay: overlay=%s", message.image_path)
-                return
-            # Display the composited image
-            final_image_path = composited_path
-            # Clean up old composites
-            self.compositor.clear_old_composites()
+            
+            # Check if this is a blank/transparent overlay (clear command)
+            is_blank_overlay = self._is_blank_overlay(message.image_path)
+            if is_blank_overlay:
+                logger.info("Received blank overlay, clearing stored overlay")
+                self._last_overlay_path = None
+                final_image_path = self.compositor.get_current_base_image_path()
+            else:
+                # Store this overlay for reapplication on future base image changes
+                self._last_overlay_path = message.image_path
+                logger.debug("Stored overlay for future reapplication: %s", message.image_path)
+                
+                composited_path = self.compositor.composite_overlay(message.image_path)
+                if not composited_path:
+                    logger.error("Failed to composite overlay: overlay=%s", message.image_path)
+                    return
+                # Display the composited image
+                final_image_path = composited_path
+                # Clean up old composites
+                self.compositor.clear_old_composites()
 
         # Send final image to VSS
         logger.debug("Sending image to VSS: image=%s, vss_url=%s",
@@ -208,6 +236,29 @@ class VssDispatcher:
         self._shutdown_requested = True
         if self.broker:
             self.broker.stop()
+
+    def _is_blank_overlay(self, image_path: str) -> bool:
+        """Check if an image is a blank/transparent overlay.
+        
+        Args:
+            image_path: Path to the image file
+            
+        Returns:
+            True if the image is blank/transparent, False otherwise
+        """
+        from pathlib import Path
+        try:
+            # Check filename - blank overlays typically have "clear" in the name
+            if "clear" in Path(image_path).name.lower():
+                logger.debug("Detected blank overlay from filename: %s", image_path)
+                return True
+            
+            # Could also check file size - blank overlays are typically very small
+            # For now, just use the filename check
+            return False
+        except Exception as e:
+            logger.warning("Error checking if overlay is blank: %s, error=%s", image_path, str(e))
+            return False
 
     def run(self) -> None:
         """Run the dispatcher."""
