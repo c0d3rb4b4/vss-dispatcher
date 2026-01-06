@@ -214,6 +214,7 @@ class VssClient:
         self,
         duration: float,
         check_interrupt: Optional[Callable[[], bool]] = None,
+        poll_callback: Optional[Callable[[], None]] = None,
         check_interval: float = 0.1,
     ) -> bool:
         """Wait for the specified duration, checking for interrupts.
@@ -221,6 +222,7 @@ class VssClient:
         Args:
             duration: Time to wait in seconds
             check_interrupt: Optional callback to check for priority interrupts
+            poll_callback: Optional callback to poll for new messages during wait
             check_interval: How often to check for interrupts (seconds)
 
         Returns:
@@ -232,6 +234,10 @@ class VssClient:
         elapsed = 0.0
 
         while elapsed < duration:
+            # Poll for new messages from RabbitMQ
+            if poll_callback:
+                poll_callback()
+            
             if check_interrupt and check_interrupt():
                 logger.info("Wait interrupted by priority message: elapsed=%.2fs, total_duration=%.2fs",
                            elapsed, duration)
@@ -244,44 +250,6 @@ class VssClient:
 
         logger.debug("Wait duration completed: duration=%.2fs, actual_elapsed=%.2fs", duration, elapsed)
         return True
-
-    def close(self) -> None:
-        """Close the client session."""
-        self.session.close()
-
-    def wait_duration(
-        self,
-        duration: float,
-        check_interrupt: Optional[Callable[[], bool]] = None,
-        check_interval: float = 0.1,
-    ) -> bool:
-        """Wait for the specified duration, checking for interrupts.
-
-        Args:
-            duration: Time to wait in seconds
-            check_interrupt: Optional callback to check for priority interrupts
-            check_interval: How often to check for interrupts (seconds)
-
-        Returns:
-            True if completed without interrupt, False if interrupted
-        """
-        logger.debug("Starting wait duration: duration=%.2fs, check_interval=%.2fs, has_interrupt_check=%s",
-                    duration, check_interval, bool(check_interrupt))
-        start_time = time.time()
-        elapsed = 0.0
-
-        while elapsed < duration:
-            if check_interrupt and check_interrupt():
-                logger.info("Wait interrupted by priority message: elapsed=%.2fs, total_duration=%.2fs",
-                           elapsed, duration)
-                return False
-
-            remaining = duration - elapsed
-            sleep_time = min(check_interval, remaining)
-            time.sleep(sleep_time)
-            elapsed = time.time() - start_time
-
-        logger.debug("Wait duration completed: duration=%.2fs, actual_elapsed=%.2fs", duration, elapsed)
         return True
 
     def close(self) -> None:

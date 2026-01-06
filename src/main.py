@@ -213,9 +213,11 @@ class VssDispatcher:
                 ack_callback()
             
             # Wait for duration, checking for priority interrupts
+            # poll_callback ensures new messages are received from RabbitMQ during the wait
             completed = self.vss_client.wait_duration(
                 message.duration,
                 check_interrupt=self.broker.has_priority_interrupt,
+                poll_callback=self.broker.poll_messages,
                 check_interval=self.config.check_interval,
             )
 

@@ -139,6 +139,21 @@ class MessageBroker:
         with self._lock:
             return len(self.priority_queue) > 0
 
+    def poll_messages(self, time_limit: float = 0.1) -> None:
+        """Poll for new messages from RabbitMQ.
+        
+        This should be called periodically during long-running operations
+        to ensure priority messages are received.
+        
+        Args:
+            time_limit: How long to wait for new messages (seconds)
+        """
+        if self.connection and self.connection.is_open:
+            try:
+                self.connection.process_data_events(time_limit=time_limit)
+            except (AMQPConnectionError, AMQPChannelError) as e:
+                logger.warning("Error polling messages: %s", str(e))
+
     def _get_next_message(self) -> Optional[tuple[VssMessage, int]]:
         """Get the next message to process, prioritizing priority queue."""
         with self._lock:
