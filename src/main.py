@@ -155,14 +155,7 @@ class VssDispatcher:
         if message.message_type == MessageType.IMAGE:
             final_image_path = self._handle_image_message(message)
         elif message.message_type == MessageType.OVERLAY:
-            # Overlays are expected to be pre-merged; treat as direct display
-            logger.info(
-                "Processing OVERLAY message: displaying provided image (duration ignored) - image=%s",
-                message.image_path,
-            )
-            # Update base to keep compositor paths consistent
-            self.compositor.update_base_image(message.image_path)
-            final_image_path = message.image_path
+            final_image_path = self._handle_overlay_message(message)
 
         if not final_image_path:
             logger.error("Failed to determine final image path for message: %s", message.image_path)
@@ -210,31 +203,66 @@ class VssDispatcher:
         if message.duration <= 0:
             self._forever_image_path = message.image_path
             logger.info("Set forever base image: %s", self._forever_image_path)
-            return message.image_path
-
-        # Timed image: display now and schedule revert to forever image (if available)
-        logger.info(
-            "Processing timed IMAGE message: image=%s, duration=%.2fs",
-            message.image_path,
-            message.duration,
-        )
-
-        if self._forever_image_path:
-            self._revert_timer = threading.Timer(
-                message.duration,
-                self._revert_to_forever_image,
-            )
-            self._revert_timer.daemon = True
-            self._revert_timer.start()
-            logger.debug(
-                "Scheduled revert to forever image in %.2fs: forever=%s",
-                message.duration,
-                self._forever_image_path,
-            )
         else:
-            logger.debug("No forever image set; timed image will persist until next update")
+            # Timed image: display now and schedule revert to forever image (if available)
+            logger.info(
+                "Processing timed IMAGE message: image=%s, duration=%.2fs",
+                message.image_path,
+                message.duration,
+            )
+
+            if self._forever_image_path:
+                self._revert_timer = threading.Timer(
+                    message.duration,
+                    self._revert_to_forever_image,
+                )
+                self._revert_timer.daemon = True
+                self._revert_timer.start()
+                logger.debug(
+                    "Scheduled revert to forever image in %.2fs: forever=%s",
+                    message.duration,
+                    self._forever_image_path,
+                )
+            else:
+                logger.debug("No forever image set; timed image will persist until next update")
+
+        # Reapply stored overlay if any
+        if self._last_overlay_path:
+            logger.info("Reapplying stored overlay to new base image: overlay=%s", self._last_overlay_path)
+            composited_path = self.compositor.composite_overlay(self._last_overlay_path)
+            if composited_path:
+                self.compositor.clear_old_composites()
+                return composited_path
+            else:
+                logger.warning("Failed to reapply overlay, using base image only")
 
         return message.image_path
+
+    def _handle_overlay_message(self, message: VssMessage) -> str | None:
+        """Handle an OVERLAY message by compositing on current base."""
+        logger.info(
+            "Processing OVERLAY message: compositing on base - overlay=%s",
+            message.image_path,
+        )
+
+        # Check if this is a blank/clear overlay
+        if self._is_blank_overlay(message.image_path):
+            logger.info("Received blank overlay, clearing stored overlay")
+            self._last_overlay_path = None
+            return self.compositor.get_current_base_image_path()
+
+        # Store this overlay for reapplication on future base image changes
+        self._last_overlay_path = message.image_path
+        logger.debug("Stored overlay for future reapplication: %s", message.image_path)
+
+        # Composite overlay on current base
+        composited_path = self.compositor.composite_overlay(message.image_path)
+        if not composited_path:
+            logger.error("Failed to composite overlay: overlay=%s", message.image_path)
+            return None
+
+        self.compositor.clear_old_composites()
+        return composited_path
 
     def _revert_to_forever_image(self) -> None:
         """Revert display to the stored forever image if available."""
@@ -244,19 +272,31 @@ class VssDispatcher:
 
         logger.info("Reverting to forever base image: %s", self._forever_image_path)
         self.compositor.update_base_image(self._forever_image_path)
+
+        # Determine final image path - reapply overlay if stored
+        final_image_path = self._forever_image_path
+        if self._last_overlay_path:
+            logger.info("Reapplying stored overlay after revert: overlay=%s", self._last_overlay_path)
+            composited_path = self.compositor.composite_overlay(self._last_overlay_path)
+            if composited_path:
+                final_image_path = composited_path
+                self.compositor.clear_old_composites()
+            else:
+                logger.warning("Failed to reapply overlay after revert, using base image only")
+
         response = self.vss_client.send_image(
             VssMessage(
-                image_path=self._forever_image_path,
+                image_path=final_image_path,
                 duration=DEFAULT_MESSAGE_DURATION,
                 message_type=MessageType.IMAGE,
             )
         )
         if response.success:
-            logger.info("Forever image restored successfully: %s", self._forever_image_path)
+            logger.info("Forever image restored successfully: %s", final_image_path)
         else:
             logger.error(
                 "Failed to restore forever image: image=%s, error=%s",
-                self._forever_image_path,
+                final_image_path,
                 response.error,
             )
 
