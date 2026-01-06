@@ -123,11 +123,12 @@ class VssDispatcher:
         
         logger.debug("VssDispatcher initialized successfully")
 
-    def handle_message(self, message: VssMessage) -> None:
+    def handle_message(self, message: VssMessage, ack_callback=None) -> None:
         """Handle a VSS message.
 
         Args:
             message: The message to process
+            ack_callback: Optional callback to acknowledge message early
         """
         logger.debug("Handling message: priority=%s, type=%s, image=%s, duration=%.2fs",
                     message.priority.value, message.message_type.value, message.image_path, message.duration)
@@ -205,6 +206,12 @@ class VssDispatcher:
 
         if response.success:
             logger.debug("Image sent successfully to VSS, starting display wait: duration=%.2fs", message.duration)
+            
+            # Acknowledge message immediately after successful send to prevent RabbitMQ timeout
+            # The display duration may be longer than RabbitMQ's ack timeout (30 minutes)
+            if ack_callback:
+                ack_callback()
+            
             # Wait for duration, checking for priority interrupts
             completed = self.vss_client.wait_duration(
                 message.duration,

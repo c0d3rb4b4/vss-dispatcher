@@ -170,15 +170,26 @@ class MessageBroker:
                 logger.debug("Processing message: priority=%s, image=%s, delivery_tag=%d",
                             message.priority.value, message.image_path, delivery_tag)
 
-                try:
-                    self.message_handler(message)
-                    if self.channel and self.channel.is_open:
+                acked = False
+                
+                def ack_callback():
+                    """Acknowledge the message early, before display duration completes."""
+                    nonlocal acked
+                    if not acked and self.channel and self.channel.is_open:
                         self.channel.basic_ack(delivery_tag=delivery_tag)
                         logger.debug("Message ACKed: delivery_tag=%d, image=%s", delivery_tag, message.image_path)
+                        acked = True
+
+                try:
+                    self.message_handler(message, ack_callback)
+                    # If handler didn't call ack_callback, acknowledge now
+                    if not acked and self.channel and self.channel.is_open:
+                        self.channel.basic_ack(delivery_tag=delivery_tag)
+                        logger.debug("Message ACKed (post-handler): delivery_tag=%d, image=%s", delivery_tag, message.image_path)
                 except Exception as e:
                     logger.error("Error processing message: image=%s, delivery_tag=%d, error=%s",
                                 message.image_path, delivery_tag, str(e), exc_info=True)
-                    if self.channel and self.channel.is_open:
+                    if not acked and self.channel and self.channel.is_open:
                         self.channel.basic_nack(
                             delivery_tag=delivery_tag, requeue=True
                         )
