@@ -1,4 +1,4 @@
-"""RabbitMQ broker for consuming messages from vss.normal and vss.priority queues."""
+"""RabbitMQ broker for consuming messages from a single queue."""
 
 import json
 import logging
@@ -18,13 +18,13 @@ from .constants import (
     MAX_RECONNECT_RETRIES,
     RECONNECT_DELAY_SECONDS,
 )
-from .models import MessagePriority, VssMessage
+from .models import VssMessage
 
 logger = logging.getLogger(__name__)
 
 
 class MessageBroker:
-    """RabbitMQ message broker with priority interrupt support."""
+    """RabbitMQ message broker (single queue)."""
 
     def __init__(
         self,
@@ -41,11 +41,9 @@ class MessageBroker:
         self.message_handler = message_handler
         self.connection: Optional[pika.BlockingConnection] = None
         self.channel: Optional[BlockingChannel] = None
-        self.priority_queue: deque = deque()
         self.normal_queue: deque = deque()
         self._running = False
         self._lock = threading.Lock()
-        self._priority_event = threading.Event()
         self._current_message: Optional[VssMessage] = None
 
     def connect(self) -> None:
@@ -68,45 +66,16 @@ class MessageBroker:
         self.connection = pika.BlockingConnection(parameters)
         self.channel = self.connection.channel()
 
-        # Declare queues
-        logger.debug("Declaring priority queue: %s (durable=True)", self.config.priority_queue)
-        self.channel.queue_declare(queue=self.config.priority_queue, durable=True)
-        logger.debug("Declaring normal queue: %s (durable=True)", self.config.normal_queue)
+        # Declare queue
+        logger.debug("Declaring queue: %s (durable=True)", self.config.normal_queue)
         self.channel.queue_declare(queue=self.config.normal_queue, durable=True)
 
         # Set prefetch count
         logger.debug("Setting QoS prefetch count: %d", self.config.prefetch_count)
         self.channel.basic_qos(prefetch_count=self.config.prefetch_count)
 
-        logger.info("Connected to RabbitMQ successfully: queues=%s, %s",
-                   self.config.priority_queue, self.config.normal_queue)
-
-    def _on_priority_message(
-        self,
-        channel: BlockingChannel,
-        method: pika.spec.Basic.Deliver,
-        properties: pika.BasicProperties,
-        body: bytes,
-    ) -> None:
-        """Handle incoming priority messages."""
-        try:
-            logger.debug("Received priority message: delivery_tag=%d, body_size=%d bytes",
-                        method.delivery_tag, len(body))
-            data = json.loads(body.decode("utf-8"))
-            message = VssMessage.from_dict(data, MessagePriority.PRIORITY)
-            logger.info("Parsed priority message: type=%s, image=%s, duration=%.2fs, delivery_tag=%d",
-                       message.message_type.value, message.image_path, message.duration, method.delivery_tag)
-
-            with self._lock:
-                queue_size = len(self.priority_queue)
-                self.priority_queue.append((message, method.delivery_tag))
-                self._priority_event.set()
-                logger.debug("Priority message queued: queue_size=%d", queue_size + 1)
-
-        except (json.JSONDecodeError, KeyError) as e:
-            logger.error("Failed to parse priority message: delivery_tag=%d, body_size=%d, error=%s",
-                        method.delivery_tag, len(body), str(e))
-            channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
+        logger.info("Connected to RabbitMQ successfully: queue=%s",
+                   self.config.normal_queue)
 
     def _on_normal_message(
         self,
@@ -120,8 +89,8 @@ class MessageBroker:
             logger.debug("Received normal message: delivery_tag=%d, body_size=%d bytes",
                         method.delivery_tag, len(body))
             data = json.loads(body.decode("utf-8"))
-            message = VssMessage.from_dict(data, MessagePriority.NORMAL)
-            logger.info("Parsed normal message: type=%s, image=%s, duration=%.2fs, delivery_tag=%d",
+            message = VssMessage.from_dict(data)
+            logger.info("Parsed message: type=%s, image=%s, duration=%.2fs, delivery_tag=%d",
                        message.message_type.value, message.image_path, message.duration, method.delivery_tag)
 
             with self._lock:
@@ -133,11 +102,6 @@ class MessageBroker:
             logger.error("Failed to parse normal message: delivery_tag=%d, body_size=%d, error=%s",
                         method.delivery_tag, len(body), str(e))
             channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
-
-    def has_priority_interrupt(self) -> bool:
-        """Check if there's a priority message waiting to interrupt."""
-        with self._lock:
-            return len(self.priority_queue) > 0
 
     def poll_messages(self, time_limit: float = 0.1) -> None:
         """Poll for new messages from RabbitMQ.
@@ -155,16 +119,14 @@ class MessageBroker:
                 logger.warning("Error polling messages: %s", str(e))
 
     def _get_next_message(self) -> Optional[tuple[VssMessage, int]]:
-        """Get the next message to process, prioritizing priority queue."""
+        """Get the next message to process."""
         with self._lock:
-            if self.priority_queue:
-                return self.priority_queue.popleft()
             if self.normal_queue:
                 return self.normal_queue.popleft()
         return None
 
     def _process_messages(self) -> None:
-        """Process messages from both queues with priority interrupt support."""
+        """Process messages from the queue."""
         logger.debug("Starting message processing loop")
         while self._running:
             # Check for new messages
@@ -182,8 +144,8 @@ class MessageBroker:
                 message, delivery_tag = message_data
                 self._current_message = message
                 
-                logger.debug("Processing message: priority=%s, image=%s, delivery_tag=%d",
-                            message.priority.value, message.image_path, delivery_tag)
+                logger.debug("Processing message: type=%s, image=%s, delivery_tag=%d",
+                            message.message_type.value, message.image_path, delivery_tag)
 
                 acked = False
                 
@@ -212,7 +174,7 @@ class MessageBroker:
                                      delivery_tag, message.image_path)
                 finally:
                     self._current_message = None
-                    self._priority_event.clear()
+                    pass
             else:
                 time.sleep(0.1)
 
@@ -240,11 +202,6 @@ class MessageBroker:
     def _setup_consumers(self) -> None:
         """Set up message consumers for both queues."""
         if self.channel:
-            self.channel.basic_consume(
-                queue=self.config.priority_queue,
-                on_message_callback=self._on_priority_message,
-                auto_ack=False,
-            )
             self.channel.basic_consume(
                 queue=self.config.normal_queue,
                 on_message_callback=self._on_normal_message,

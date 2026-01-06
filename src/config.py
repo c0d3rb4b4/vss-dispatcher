@@ -7,7 +7,6 @@ from .constants import (
     DEFAULT_CHECK_INTERVAL,
     DEFAULT_NORMAL_QUEUE,
     DEFAULT_PREFETCH_COUNT,
-    DEFAULT_PRIORITY_QUEUE,
     DEFAULT_RABBITMQ_PORT,
     DEFAULT_SAMBA_MOUNT,
     DEFAULT_BASE_IMAGE_DIR,
@@ -40,9 +39,6 @@ class RabbitMQConfig:
     )
     normal_queue: str = field(
         default_factory=lambda: os.getenv("RABBITMQ_NORMAL_QUEUE", DEFAULT_NORMAL_QUEUE)
-    )
-    priority_queue: str = field(
-        default_factory=lambda: os.getenv("RABBITMQ_PRIORITY_QUEUE", DEFAULT_PRIORITY_QUEUE)
     )
     prefetch_count: int = field(
         default_factory=lambda: int(os.getenv("RABBITMQ_PREFETCH_COUNT", str(DEFAULT_PREFETCH_COUNT)))

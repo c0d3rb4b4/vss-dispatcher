@@ -4,12 +4,13 @@ import json
 import logging
 import signal
 import sys
+import threading
 from pathlib import Path
 
 from .broker import MessageBroker
 from .compositor import ImageCompositor
 from .config import load_config
-from .constants import ALLOWED_IMAGE_EXTENSIONS, APP_NAME, APP_VERSION
+from .constants import ALLOWED_IMAGE_EXTENSIONS, APP_NAME, APP_VERSION, DEFAULT_MESSAGE_DURATION
 from .models import MessageType, VssMessage
 from .vss_client import VssClient
 
@@ -120,6 +121,8 @@ class VssDispatcher:
         
         # Store last overlay for reapplication on base image changes
         self._last_overlay_path: str | None = None
+        self._forever_image_path: str | None = None
+        self._revert_timer: threading.Timer | None = None
         
         logger.debug("VssDispatcher initialized successfully")
 
@@ -130,112 +133,130 @@ class VssDispatcher:
             message: The message to process
             ack_callback: Optional callback to acknowledge message early
         """
-        logger.debug("Handling message: priority=%s, type=%s, image=%s, duration=%.2fs",
-                    message.priority.value, message.message_type.value, message.image_path, message.duration)
-        
+        logger.debug(
+            "Handling message: type=%s, image=%s, duration=%.2fs",
+            message.message_type.value,
+            message.image_path,
+            message.duration,
+        )
+
         # Validate image path
         if not validate_image_path(message.image_path, self.config.mount.samba_mount):
-            logger.error("Message rejected: invalid image path - priority=%s, type=%s, image=%s",
-                        message.priority.value, message.message_type.value, message.image_path)
+            logger.error(
+                "Message rejected: invalid image path - type=%s, image=%s",
+                message.message_type.value,
+                message.image_path,
+            )
             return
 
-        # Determine final image path based on message type
+        # Handle based on type (duration only meaningful for IMAGE)
         final_image_path = message.image_path
-        
-        if message.message_type == MessageType.IMAGE:
-            # Full image update - also update base image
-            logger.info("Processing IMAGE message: updating base and displaying - image=%s, duration=%.2fs",
-                       message.image_path, message.duration)
-            if not self.compositor.update_base_image(message.image_path):
-                logger.error("Failed to update base image: image=%s", message.image_path)
-                return
-            
-            # If we have a stored overlay, reapply it to the new base image
-            if self._last_overlay_path:
-                logger.info("Reapplying stored overlay to new base image: overlay=%s", self._last_overlay_path)
-                composited_path = self.compositor.composite_overlay(self._last_overlay_path)
-                if composited_path:
-                    final_image_path = composited_path
-                    logger.debug("Overlay reapplied successfully: %s", composited_path)
-                else:
-                    logger.warning("Failed to reapply overlay, using base image only: overlay=%s", self._last_overlay_path)
-                    final_image_path = message.image_path
-            else:
-                # No stored overlay, just display the new base image
-                final_image_path = message.image_path
-            
-        elif message.message_type == MessageType.OVERLAY:
-            # Overlay message - composite on current base
-            logger.info("Processing OVERLAY message: compositing on base - overlay=%s, duration=%.2fs",
-                       message.image_path, message.duration)
-            
-            # Check if this is a blank/transparent overlay (clear command)
-            is_blank_overlay = self._is_blank_overlay(message.image_path)
-            if is_blank_overlay:
-                logger.info("Received blank overlay, clearing stored overlay")
-                self._last_overlay_path = None
-                final_image_path = self.compositor.get_current_base_image_path()
-            else:
-                # Store this overlay for reapplication on future base image changes
-                self._last_overlay_path = message.image_path
-                logger.debug("Stored overlay for future reapplication: %s", message.image_path)
-                
-                composited_path = self.compositor.composite_overlay(message.image_path)
-                if not composited_path:
-                    logger.error("Failed to composite overlay: overlay=%s", message.image_path)
-                    return
-                # Display the composited image
-                final_image_path = composited_path
-                # Clean up old composites
-                self.compositor.clear_old_composites()
 
-        # Send final image to VSS
-        logger.debug("Sending image to VSS: image=%s, vss_url=%s",
-                    final_image_path, self.config.vss.base_url)
-        
-        # Create a new message with the final image path
-        display_message = VssMessage(
-            image_path=final_image_path,
-            duration=message.duration,
-            priority=message.priority,
-            message_type=message.message_type,
-            message_id=message.message_id,
+        if message.message_type == MessageType.IMAGE:
+            final_image_path = self._handle_image_message(message)
+        elif message.message_type == MessageType.OVERLAY:
+            # Overlays are expected to be pre-merged; treat as direct display
+            logger.info(
+                "Processing OVERLAY message: displaying provided image (duration ignored) - image=%s",
+                message.image_path,
+            )
+            # Update base to keep compositor paths consistent
+            self.compositor.update_base_image(message.image_path)
+            final_image_path = message.image_path
+
+        if not final_image_path:
+            logger.error("Failed to determine final image path for message: %s", message.image_path)
+            return
+
+        response = self.vss_client.send_image(
+            VssMessage(
+                image_path=final_image_path,
+                duration=message.duration,
+                message_type=message.message_type,
+                message_id=message.message_id,
+            )
         )
-        
-        response = self.vss_client.send_image(display_message)
 
         if response.success:
-            logger.debug("Image sent successfully to VSS, starting display wait: duration=%.2fs", message.duration)
-            
-            # Acknowledge message immediately after successful send to prevent RabbitMQ timeout
-            # The display duration may be longer than RabbitMQ's ack timeout (30 minutes)
+            logger.info(
+                "Image sent to VSS: type=%s, image=%s, duration=%.2fs",
+                message.message_type.value,
+                final_image_path,
+                message.duration,
+            )
             if ack_callback:
                 ack_callback()
-            
-            # Wait for duration, checking for priority interrupts
-            # poll_callback ensures new messages are received from RabbitMQ during the wait
-            completed = self.vss_client.wait_duration(
-                message.duration,
-                check_interrupt=self.broker.has_priority_interrupt,
-                poll_callback=self.broker.poll_messages,
-                check_interval=self.config.check_interval,
-            )
-
-            if completed:
-                logger.info("Display completed successfully: priority=%s, type=%s, image=%s, duration=%.2fs",
-                           message.priority.value, message.message_type.value, final_image_path, message.duration)
-            else:
-                logger.info(
-                    "Display interrupted by priority message: type=%s, image=%s, elapsed_time<%.2fs",
-                    message.message_type.value, final_image_path, message.duration,
-                )
         else:
             logger.error(
-                "Failed to send image to VSS: priority=%s, type=%s, image=%s, vss_url=%s, error=%s",
-                message.priority.value,
+                "Failed to send image to VSS: type=%s, image=%s, vss_url=%s, error=%s",
                 message.message_type.value,
                 final_image_path,
                 self.config.vss.base_url,
+                response.error,
+            )
+
+    def _handle_image_message(self, message: VssMessage) -> str | None:
+        """Handle an IMAGE message with forever/timed semantics."""
+        # Cancel any pending revert timer when a new image arrives
+        if self._revert_timer and self._revert_timer.is_alive():
+            self._revert_timer.cancel()
+            self._revert_timer = None
+
+        if not self.compositor.update_base_image(message.image_path):
+            logger.error("Failed to update base image: image=%s", message.image_path)
+            return None
+
+        # If duration <= 0, treat as forever image and remember it
+        if message.duration <= 0:
+            self._forever_image_path = message.image_path
+            logger.info("Set forever base image: %s", self._forever_image_path)
+            return message.image_path
+
+        # Timed image: display now and schedule revert to forever image (if available)
+        logger.info(
+            "Processing timed IMAGE message: image=%s, duration=%.2fs",
+            message.image_path,
+            message.duration,
+        )
+
+        if self._forever_image_path:
+            self._revert_timer = threading.Timer(
+                message.duration,
+                self._revert_to_forever_image,
+            )
+            self._revert_timer.daemon = True
+            self._revert_timer.start()
+            logger.debug(
+                "Scheduled revert to forever image in %.2fs: forever=%s",
+                message.duration,
+                self._forever_image_path,
+            )
+        else:
+            logger.debug("No forever image set; timed image will persist until next update")
+
+        return message.image_path
+
+    def _revert_to_forever_image(self) -> None:
+        """Revert display to the stored forever image if available."""
+        if not self._forever_image_path:
+            logger.debug("Revert skipped: no forever image set")
+            return
+
+        logger.info("Reverting to forever base image: %s", self._forever_image_path)
+        self.compositor.update_base_image(self._forever_image_path)
+        response = self.vss_client.send_image(
+            VssMessage(
+                image_path=self._forever_image_path,
+                duration=DEFAULT_MESSAGE_DURATION,
+                message_type=MessageType.IMAGE,
+            )
+        )
+        if response.success:
+            logger.info("Forever image restored successfully: %s", self._forever_image_path)
+        else:
+            logger.error(
+                "Failed to restore forever image: image=%s, error=%s",
+                self._forever_image_path,
                 response.error,
             )
 
@@ -280,9 +301,13 @@ class VssDispatcher:
             APP_NAME,
             APP_VERSION,
         )
-        logger.info("RabbitMQ: host=%s, port=%d, vhost=%s, priority_queue=%s, normal_queue=%s", 
-                   self.config.rabbitmq.host, self.config.rabbitmq.port, self.config.rabbitmq.virtual_host,
-                   self.config.rabbitmq.priority_queue, self.config.rabbitmq.normal_queue)
+        logger.info(
+            "RabbitMQ: host=%s, port=%d, vhost=%s, queue=%s",
+            self.config.rabbitmq.host,
+            self.config.rabbitmq.port,
+            self.config.rabbitmq.virtual_host,
+            self.config.rabbitmq.normal_queue,
+        )
         logger.info("VSS Service: base_url=%s, timeout=%ds, retries=%d", 
                    self.config.vss.base_url, self.config.vss.timeout, self.config.vss.retry_count)
         logger.info("Mount path: %s", self.config.mount.samba_mount)

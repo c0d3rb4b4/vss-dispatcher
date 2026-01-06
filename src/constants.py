@@ -4,9 +4,8 @@
 APP_NAME = "vss-dispatcher"
 APP_VERSION = "1.0.0"
 
-# RabbitMQ queue names
+# RabbitMQ queue name
 DEFAULT_NORMAL_QUEUE = "vss.normal"
-DEFAULT_PRIORITY_QUEUE = "vss.priority"
 DEFAULT_VHOST = "/mediawall"
 
 # Connection defaults
@@ -26,7 +25,7 @@ RECONNECT_DELAY_SECONDS = 5
 
 # Processing defaults
 DEFAULT_CHECK_INTERVAL = 0.1
-DEFAULT_MESSAGE_DURATION = 5.0
+DEFAULT_MESSAGE_DURATION = -1.0
 
 # Mount paths
 DEFAULT_SAMBA_MOUNT = "/mnt/mediawall"
